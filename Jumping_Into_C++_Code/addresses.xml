@@ -1,0 +1,10 @@
+<address-book>
+  <entry>
+    <name>Alex Allain</name>
+    <email>webmaster@cprogramming.com</email>
+  </entry>
+  <entry>
+    <name>Joe Doe</name>
+    <email>john@doe.com</email>
+  </entry>
+</address-book>

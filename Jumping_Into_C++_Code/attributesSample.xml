@@ -1,0 +1,13 @@
+<model is_public="yes" is_bug="no" status="done" xmlns="http://www.csiberkeley.com" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.csiberkeley.com http://www.csiamerica.com/sites/default/files/schemas/model_database_model_V0_4.xsd" documentation_status="not applicable">
+  <id  >387</id   >
+  <id_secondary>
+  </id_secondary>
+  <title>Template - Steel Deck</title>
+  <path type="relative">
+    models\0387.edb
+      <database_file_name attribute1="value with spaces" attribute_2="valueWithoutSpaces">
+        <another_child>
+        </another_child>
+      </database_file_name>
+  </path>
+</model>
