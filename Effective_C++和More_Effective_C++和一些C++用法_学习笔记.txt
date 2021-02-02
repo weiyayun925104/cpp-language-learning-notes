@@ -1,0 +1,1980 @@
+
+析构函数不要抛出异常，因该在内部捕捉异常
+如果需要对某个操作抛出的异常做出反应，应该将这个操作放到普通函数（而不是析构函数）里面
+
+原代码：
+
+class DBConn
+{
+public:
+    ~DBConn()
+    {
+        db.close();
+    }
+private:
+    DBConnection db;
+}
+
+修改后的代码：
+
+class DBConn
+{
+public:
+    void close()
+    {
+        db.close();
+        closed = true;
+    }
+
+    ~DBConn()
+    {
+        if(!closed)
+        {
+            try
+            {
+                db.close();
+            }
+            catch(...)
+            {
+                std::abort();
+            }
+        }
+    }
+private:
+    bool closed;
+    DBConnection db;
+}
+
+
+不要在构造和析构过程中调用virtual函数
+主要是因为有继承的时候会调用错误版本的函数，例如
+
+原代码：
+
+class Transaction
+{
+public:
+    Transaction()
+    {
+        logTransaction();
+    }
+    virtual void logTransaction() const = 0;
+};
+
+class BuyTransaction:public Transaction
+{
+    public:
+        virtual void logTransaction() const;
+};
+
+BuyTransaction b;
+
+或者有一个更难发现的版本：
+
+class Transaction
+{
+public:
+    Transaction(){init();}
+    virtual void logTransaction() const = 0;
+private:
+    void init()
+    {
+        logTransaction();
+    }
+};
+
+这个时候代码会调用 Transaction 版本的logTransaction，因为在构造函数里面是先调用了父类的构造函数，所以会先调用父类的logTransaction版本，
+解决方案是不在构造函数里面调用，或者将需要调用的virtual弄成non-virtual的
+
+修改以后：
+
+class Transaction
+{
+public:
+    explicit Transaction(const std::string& logInfo);
+    void logTransaction(const std::string& logInfo) const; //non-virtual 函数
+}
+
+Transaction::Transaction(const std::string& logInfo)
+{
+    logTransaction(logInfo); //non-virtual函数
+}
+
+class BuyTransaction: public Transaction
+{
+public:
+    BuyTransaction(parameters):Transaction(createLogString(parameters)){...} //将log信息传递给base class 构造函数
+private:
+    static std::string createLogString(parameters); //注意这个函数是用来给上面那个函数初始化数据的，这个辅助函数的方法
+}
+
+
+在构造和析构期间不要调用virtual函数，因为这类调用从不下降至派生类的版本
+
+
+public继承对应is-a关系，意味着每一个Base class的东西一定适用于他的derived class
+
+
+避免遮掩继承而来的名称 （Avoid hiding inherited names)
+
+举例： 
+class Base
+{ 
+    public:
+    virtual void mf1() = 0;
+    virtual void mf1(int);
+    virtual void mf2();
+    void mf3();
+    void mf3(double);
+};
+
+class Derived:public Base
+{
+    public:
+        virtual void mf1();
+        void mf3();
+};
+
+这种问题可以通过
+
+using Base::mf1;
+或者
+virtual void mf1()
+{    //转交函数
+    Base::mf1();
+}
+来解决，但是尽量不要出现这种遮蔽的行为
+
+derived class 会遮蔽Base class的名称
+可以通过using 或者转交函数来解决
+
+
+pure virtual 函数式提供了一个接口继承，当一个函数式pure virtual的时候，意味着所有的实现都在子类里面实现。
+不过pure virtual也是可以有实现的，调用他的实现的方法是在调用前加上基类的名称：
+
+class Shape
+{
+    virtual void draw() const = 0;
+}
+ps->Shape::draw();
+
+在public继承下，derived classes总是继承base的接口
+pure virtual函数只具体指定接口继承
+普通的（非纯）impure virtual函数具体指定接口继承以及缺省实现继承
+non-virtual函数具体指定接口继承以及强制性的实现继承
+
+
+virtual函数的替代方案
+
+通过public non-virtual成员函数间接调用private virtual函数：
+
+class GameCharacter
+{
+public:
+    int healthValue() const
+    {
+        //做一些事前工作
+        int retVal = doHealthValue();
+        //做一些事后工作
+        return retVal;
+    }
+private:
+    virtual int doHealthValue() const
+    {
+        ...                   //缺省算法，计算健康函数
+    }
+}
+
+这种方法的优点在于事前工作和事后工作，这些工作能够保证virtual函数在真正工作之前之后被单独调用
+
+也可以使用函数指针
+
+class GameCharacter; // 前置声明
+int defaultHealthCalc(const GameCharacter& gc);
+
+class GameCharacter
+{
+public:
+    typedef int (*HealthCalcFunc)(const GameCharacter&);//函数指针
+    explicit GameCHaracter(HealthCalcFunc hcf = defaultHealthCalc):healthFunc(hcf){}//可以换一个函数的
+    int healthValue()const{return healthFunc(*this);}
+private:
+    HealthCalcFunc healthFunc;
+}
+
+如果将函数指针换成函数对象的话，会有更具有弹性的效果：
+
+
+绝不重新定义继承而来的non-virtual函数 （Never redefine an inherited non-virtual function)
+
+主要是考虑一下的代码： 
+class B
+{
+public:
+    void mf();
+};
+
+class D : public B
+{
+public:
+    void mf();
+};
+
+D x;
+
+B *pB = &x;
+pB->mf(); //调用B版本的mf
+D *pD = &x;
+pD->mf(); // 调用D版本的mf
+
+即使不考虑这种代码层的差异，如果这样重定义的话，也不符合之前的“每一个D都是一个B”的定义
+
+
+绝不重新定义继承而来的缺省参数值 （Never redefine a function's inherited default parameter value)
+
+原代码：
+
+class Shape
+{
+public:
+    enum ShapeColor {Red, Green, Blue};
+    virtual void draw(ShapeColor color = Red) const = 0;
+};
+
+class Rectangle : public Shape
+{
+public:
+    virtual void draw(ShapeColor color = Green) const; //和父类的默认参数不同
+};
+
+Shape *pr = new Rectangle; // 注意此时pr的静态类型是Shape，但是他的动态类型是Rectangle
+pr->draw(); //virtual函数是动态绑定，而缺省参数值是静态绑定，所以会调用Red
+
+
+通过composition塑模出has-a关系
+
+一个类里面有另外一个类作为成员，那么这两个类的成员关系就叫做composition。
+
+例如：set并不是一个list，但是set可以has a list：
+
+template<class T>
+class Set
+{
+public: 
+    void insert();
+    //.......
+private:
+    std::list<T> rep;
+}
+
+
+明智而审慎地使用private继承 （Use private inheritance judiciously)
+
+private继承并不是is-a的关系，经过private继承以后，子类继承来的所有成员都是private的，有点像composition，大多数情况下可以用composition代替private继承。
+
+当我们需要两个并不存在“is a”关系的类，同时一个类需要访问另一个类的protected成员的时候，我们可以使用private继承
+
+当derived class 需要访问base class 的protect成员，或者需要重新定义继承而来的virtual函数时，这么设计是合理的。
+
+谨慎使用多重继承 （Use multiple inheritance judiciously)
+
+多重继承很容易造成名字冲突：
+
+class BorrowableItem{
+    public:
+    void checkOut();
+};
+class ElectronicGadget{
+    bool checkOut()const;
+};
+class MP3Player:public BorrowableItem, public ElectronicGadget{...};
+MP3Player mp;
+mp.checkOut();//歧义，到底是哪个类的函数
+只能使用：
+mp.BorrowableItem::checkOut();
+
+在实际应用中, 经常会出现两个类继承与同一个父类，然后再有一个类多继承这两个类：
+
+class Parent{...};
+class First : public Parent(...);
+class Second : public Parent{...};
+class last:public First, public Second{...};
+
+不论虚基类在继承体系中出现了多少次，派生类都只包含唯一一个共享的虚基类子对象。
+指定虚基类的方式是在派生列表中添加关键字virtual。
+
+// the order of the keywords public and virtual is not significant
+class Raccoon : public virtual ZooAnimal { /* ... */ };
+class Bear : virtual public ZooAnimal { /* ... */ };
+
+如果某个类指定了虚基类，则该类的派生仍按照常规方式进行。
+
+class Panda : public Bear, public Raccoon, public Endangered { /* ... */ };
+
+不论基类是不是虚基类，派生类对象都能被可访问基类的指针或引用操作。
+
+因为在每个共享的虚基类中只有唯一一个共享的子对象，所以该基类的成员可以被直接访问，而且不会产生二义性。
+此外，如果虚基类的成员只被一条派生路径覆盖，则也可以直接访问该成员。
+但如果成员被多个基类覆盖，则一般情况下派生类必须为该成员定义新的版本。
+例如，假设类B定义了一个名为X的成员，D1和D2都从B虚继承得到，D继承了D1和D2。
+则在D的作用域中，X通过D的两个基类都是可见的。如果通过D的对象使用X，则有三种可能性：
+
+    如果D1和D2中都没有X的定义，则X会被解析为B的成员，此时不存在二义性。
+    如果D1和D2中的某一个定义了X，派生类的X会比共享虚基类B的X优先级更高，此时同样没有二义性。
+    如果D1和D2都定义了X，则直接访问X会产生二义性问题。
+
+在虚派生中，虚基类是由最低层的派生类初始化的。如果按普通规则处理，虚基类将会在多条继承路径上被重复初始化。
+
+继承体系中的每个类都可能在某个时刻成为“最低层的派生类”。
+只要能创建虚基类的派生类对象，该派生类的构造函数就必须初始化它的虚基类。即使虚基类不是派生类的直接基类，构造函数也可以进行初始化。
+
+Bear::Bear(std::string name, bool onExhibit)
+    : ZooAnimal(name, onExhibit, "Bear") { }
+
+Raccoon::Raccoon(std::string name, bool onExhibit)
+    : ZooAnimal(name, onExhibit, "Raccoon") { }
+
+Panda::Panda(std::string name, bool onExhibit)
+    : ZooAnimal(name, onExhibit, "Panda"),
+      Bear(name, onExhibit),
+      Raccoon(name, onExhibit),
+      Endangered(Endangered::critical),
+      sleeping flag(false) { }
+
+构造含有虚基类的对象时，首先使用提供给最低层派生类构造函数的初始值初始化该对象的虚基类子部分，
+之后再按照直接基类在派生列表中出现的顺序依次对其初始化。
+
+一个类可以有多个虚基类，此时这些虚子对象按照它们在派生列表中出现的顺序依次构造。
+
+多重继承的使用情况：当一个类是“public 继承某个interface class”和“private 继承某个协助实现的class”两个相结合的时候。
+
+
+在任何时候想要在template中指定一个嵌套从属类型名称（dependent names，依赖于C的类型名称），前面必须添加typename
+
+声明template参数时，前缀关键字class和typename是可以互换的
+
+需要使用typename标识嵌套从属类型名称，但不能在base class lists（基类列）或者member initialization list（成员初始列）内以它作为base class修饰符
+
+template class Derived : public typename Base ::Nested{}//错误的！！！！！
+
+
+知道如何访问模板化基类内的名称 （Know how to access names in templatized base classes)
+
+class CompanyA
+{
+public:
+    void sendCleartext(const std::string& msg);
+    ....
+}
+class CompanyB{....}
+
+template <typename Company>
+class MsgSender
+{
+public:
+    void sendClear(const MsgInfo& info)
+    {
+        std::string msg;
+        Company c;
+        c.sendCleartext(msg);
+    }
+}
+
+template<typename Company>
+class LoggingMsgSender:public MsgSender<Company>
+{
+    public:
+    void sendClearMsg(const MsgInfo& info)
+    {
+        //记录log
+        MsgSender<Company>::sendClear(info);//假设sendClear将被继承
+    }
+}
+
+
+将与参数无关的代码抽离templates （Factor parameter-independent code out of templates)
+
+template<typename T, std::size_t n>
+class SquareMatrix
+{
+    public:
+    void invert();    //求逆矩阵
+}
+
+SquareMatrix<double, 5> sm1;
+SquareMatrix<double, 10> sm2;
+sm1.invert(); 
+sm2.invert(); //会具现出两个invert并且基本完全相同
+
+修改后的代码：
+
+template<typename T>
+class SquareMatrixBase
+{
+protected:
+    void invert(std::size_t matrixSize);
+}
+
+template<typename T, std::size_t n>
+class SquareMatrix:private SquareMatrixBase<T>
+{
+private:
+    using SquareMatrixBase<T>::invert;  //避免遮掩base版的invert
+public:
+    void invert(){ this->invert(n); }   //一个inline调用，调用base class版的invert
+}
+
+
+运用成员函数模板接受所有兼容类型 （Use member function templates to accept "all compatible types.")
+
+template<typename T>
+class SmartPtr
+{
+public:
+    template<typename U>
+    SmartPtr(const SmartPtr<U>& other) : heldPtr(other.get()){....}
+    T* get() const { return heldPtr; }
+private:
+    T* heldPtr;                        //这个SmartPtr持有的内置原始指针
+};
+
+使用成员函数模板生成“可接受所有兼容类型”的函数
+如果还想泛化copy构造函数、操作符重载等，同样需要在前面加上template
+
+需要类型转换时请为模板定义非成员函数 （Define non-member functions inside templates when type conversions are desired)
+
+template<typename T>
+class Rational
+{
+    public:
+    friend const Rational operator*(const Rational& lhs, const Rational& rhs)
+    {
+        return Rational(lhs.numerator()*rhs.numerator(), lhs.denominator() * rhs.denominator());
+    }
+};
+template<typename T>
+const Rational<T> operator*(const Rational<T>& lhs, const Rational<T>&rhs){....}
+
+当我们编写一个class template， 而他所提供的“与此template相关的”函数支持所有参数隐形类型转换时，请将那些函数定义为class template内部的friend函数
+
+使用traits classes获取类型信息 （Use traits classes for information about types)
+
+template<typename IterT, typename DistT>
+void doAdvance(IterT& iter, DistT d, std::random_access_iterator_tag){ iter += d; }//用于实现random access迭代器
+template<typename IterT, typename DistT>
+void doAdvance(IterT& iter, DistT d, std::bidirectional_iterator_tag)
+{
+    //用于实现bidirectional迭代器
+    if(d >=0)
+    {
+        while(d--)
+            ++iter;
+    }
+    else
+    {
+        while(d++)
+            --iter;
+    }
+}
+
+template<typename IterT, typename DistT>
+void advance(IterT& iter, DistT d)
+{
+    doAdvance(iter, d, typename std::iterator_traits<IterT>::iterator_category());
+}
+
+
+认识template元编程 （Be aware of template metaprogramming)
+
+Template metaprogramming是编写执行于编译期间的程序，因为这些代码运行于编译器而不是运行期，所以效率会很高，同时一些运行期容易出现的问题也容易暴露出来
+
+template<unsigned n>
+struct Factorial
+{
+    enum
+    {
+        value = n * Factorial<n-1>::value
+    };
+};
+
+template<>
+struct Factorial<0>
+{
+    enum{ value = 1 };
+};                       //这就是一个计算阶乘的元编程
+
+
+引用必须指向一个对象，而不是空值，下面是一个危险的例子：
+
+char* pc = 0;  //设置指针为空值
+char& rc = *pc;//让引用指向空值，很危险！！！
+
+下面的情况下使用指针：
+ 存在不指向任何对象的可能
+ 需要能够在不同的时刻指向不同的对象 其他情况应该使用引用
+
+
+优先考虑C++风格的类型转换
+
+static_cast
+static_cast的转换格式：static_cast <type-id> (expression)
+将expression转换为type-id类型，主要用于非多态类型之间的转换，不提供运行时的检查来确保转换的安全性。主要在以下几种场合中使用：
+用于类层次结构中，基类和子类之间指针和引用的转换；
+当进行上行转换，也就是把子类的指针或引用转换成父类表示，这种转换是安全的；
+当进行下行转换，也就是把父类的指针或引用转换成子类表示，这种转换是不安全的，也需要程序员来保证；
+用于基本数据类型之间的转换，如把int转换成char，把int转换成enum等等，这种转换的安全性需要程序员来保证；
+把void指针转换成目标类型的指针，是及其不安全的；
+static_cast不能用于在不同类型的指针之间互相转换，不能用于整型和指针之间的互相转换，不能用于不同类型的引用之间的转换。
+static_cast不能转换掉expression的const、volatile等属性。
+
+dynamic_cast
+dynamic_cast的转换格式：dynamic_cast <type-id> (expression)
+将expression转换为type-id类型，type-id必须是类的指针、类的引用或者是void *；
+如果type-id是指针类型，那么expression也必须是一个指针；
+如果type-id是一个引用，那么expression也必须是一个引用。
+dynamic_cast主要用于类层次间的上行转换和下行转换，还可以用于类之间的交叉转换。
+在类层次间进行上行转换时，dynamic_cast和static_cast的效果是一样的；
+在进行下行转换时，dynamic_cast具有类型检查的功能，比static_cast更安全。
+在多态类型（基类包含虚函数）之间的转换主要使用dynamic_cast，因为类型提供了运行时信息。
+如果expression是type-id的基类，使用dynamic_cast进行转换时，在运行时就会检查expression是否真正的指向一个type-id类型的对象，
+如果是，则能进行正确的转换，获得对应的值；否则返回空指针，如果是引用，则在运行时就会抛出异常。
+dynamic_cast不能用于将非多态基类的指针或引用强制转换为派生类的指针或引用——这种转换没法保证安全性，只好用reinterpret_cast来完成。
+
+reinterpret_cast
+reinterpret_cast的转换格式：reinterpret_cast<type-id> (expression)
+type-id必须是一个指针、引用、算术类型、函数指针或者成员指针。
+它可以把一个指针转换成一个整数，也可以把一个整数转换成一个指针
+（先把一个指针转换成一个整数，在把该整数转换成原类型的指针，还可以得到原先的指针值）。
+reinterpret_cast用于各种不同类型的指针之间、不同类型的引用之间以及指针和能容纳指针的整数类型之间的转换。
+
+const_cast
+const指针被转化成非const指针，并且仍然指向原来的对象；
+const引用被转换成非const引用，并且仍然指向原来的对象；
+const_cast的作用是用来改变表达式里面的常量性（const）或易变性（volatile）。
+
+
+决不要把多态用于数组
+
+主要是考虑以下写法：
+
+class BST{...}
+class BalancedBST : public BST{...}
+
+void printBSTArray(const BST array[])
+{
+    for(auto i : array)
+    {
+        std::cout << *i;
+    }
+}
+
+BalancedBST bBSTArray[10];
+printBSTArray(bBSTArray);
+
+由于我们之前说的，这种情况下编译器是毫无警告的，而对象在传递过程中是按照声明的大小来传递的，所以每一个元素的间隔是sizeof(BST)此时指针就指向了错误的地方
+
+
+避免不必要的默认构造函数
+
+这里主要是为了防止出现有了对象但是却没有必要的数据，例如：没有id的人
+
+
+小心用户自定义的转换函数
+
+因为可能会出现一些无法理解的并且也是无能为力的运算，而且在不需要这些类型转换函数的时候，仍然可能会调用这些转换，例如下面的代码：
+
+// 有理数类
+class Rational
+{
+public:
+    Rational(int numerator = 0, int denominator = 1)
+    operator double() const;
+}
+
+Rational r(1, 2);
+double d = 0.5 * r; //将r转换成了double进行计算
+
+cout << r; //会调用最接近的类型转换函数double，将r转换成double打印出来，而不是想要的1/2，
+
+上面问题的解决方法是，把double变成
+
+double asDouble() const;
+这样就可以直接用了
+
+但是即使这样做还有可能会出现隐式转换的现象：
+
+template<class T>
+class Array
+{
+public:
+    Array(int size);
+    T& operator[](int index);
+};
+
+bool operator==(const Array<int> &lhs, const Array<int> & rhs);
+Array<int> a(10), b(10);
+if(a == b[3]) //想要写 a[3] == b[3]，但是这时候编译器并不会报错，解决方法是使用explicit关键字
+
+explicit Array(int size); 
+if(a == b[3]) // 错误，无法进行隐式转换
+
+
+区分自增运算符和自减运算符的前缀形式与后缀形式
+
+这一点主要是要知道前缀和后缀的重载形式是不同的，以及重载的时候不要进行连续重载，例如i++++; 因为连续的+号会导致创建很多临时对象，效率会变低
+
+template <typename T>
+class NodeIterator
+{
+public:
+    NodeIterator(Node<T> *ptr) : node_ptr(ptr) {};
+
+    NodeIterator &operator++();    //前缀++
+    NodeIterator &operator--();    //前缀--
+    NodeIterator  operator++(int);    //后缀++
+    NodeIterator  operator--(int);    //后缀--
+    bool operator!=(const NodeIterator &) const;
+    T &operator*() const;
+
+private:
+    Node<T> *node_ptr;
+};
+
+
+不要重载"&&"、"||"和","
+
+主要是因为上面三个符号，大部分的程序员都已经达成共识，先运算前面的一串表达式，再判断后面的一串表达式： 
+if(expression1 && expression2){} 就会先运算第一个表达式，然后再运算第二个表达式
+
+比较特殊的是逗号操作符：“,“，例如最常见的for循环：
+
+for(int i = 0, j = strlen(s)-1; i < j; i++, j--){}
+
+在这个for循环里面，因为最后一个部分职能使用一个表达式，分开表达式来改变i和j的值是不合法的，用逗号表达式就会先计算出来左边的i++，然后计算出逗号右边的j--
+
+
+理解new和delete在不同情形下的含义
+
+两种new: new 操作符（new operator）和new操作（operator new）的区别
+
+string *ps = new string("Memory Management"); //使用的是new操作符，这个操作符像sizeof一样是内置的，无法改变
+
+void* operator new(size_t size); // new操作，可以重写这个函数来改变如何分配内存
+
+一般不会直接调用operator new，但是可以像调用其他函数一样调用他：
+
+void* rawMemory = operator new(sizeof(String));
+
+placement new : placement new 是有一些已经被分配但是没有被处理的内存，需要在这个内存里面构造一个对象，使用placement new 可以实现这个需求，实现方法：
+
+class Widget
+{
+    public:
+        Widget(int widgetSize);
+    ....
+};
+
+Widget* constructWidgetInBuffer(void *buffer, int widgetSize){
+    return new(buffer) Widget(widgetSize);
+}
+
+这样就返回一个指针，指向一个Widget对象，对象在传递给函数的buffer里面分配
+
+同样的道理： 
+delete buffer; //指的是先调用buffer的析构函数，然后再释放内存
+operator delete(buffer); //指的是只释放内存，但是不调用析构函数
+
+而placement new 出来的内存，就不应该直接使用delete操作符，因为delete操作符使用operator delete来释放内存，
+但是包含对象的内存最初不是被operator new分配的，而应该显示调用析构函数来消除构造函数的影响
+
+new[]和delete[]就相当于对每一个数组元素调用构造和析构函数
+
+
+使用析构函数防止资源泄漏
+
+原代码：
+
+void processAdoptions(istream &dataSource)
+{
+    while(dataSource)
+    {
+        ALA *pa = readALA(dataSource);
+        try
+        {
+            pa->processAdoption();
+        }
+        catch(...)
+        {
+            delete pa; //在抛出异常的时候避免泄露
+            throw;
+        }
+        delete pa;     //在不抛出异常的时候避免泄露
+    }
+}
+
+因为这种情况会需要删除两次pa，代码维护很麻烦，所以需要进行优化：
+
+template <typename T>
+class auto_ptr
+{
+public:
+    auto_ptr(T *p = 0): ptr(p) {} //保存ptr，指向对象
+    ~auto_ptr()
+    {
+        delete prt;
+    }
+private:
+    T *ptr;
+}
+
+void processAdoptions(istream &dataSource)
+{
+    while(dataSource)
+    {
+        auto_ptr pa(readALA(dataSource));
+        pa->processAdoption();
+    }
+}
+
+auto_ptr后面隐藏的思想是：使用一个对象来存储需要被自动释放的资源，然后依靠对象的析构函数来释放资源。 
+事实上WindowHandle就是这样一个东西
+
+那么这样就引出一个非常重要的规则：资源应该被封装在一个对象里面
+
+
+防止构造函数里的资源泄漏
+
+这一条主要是防止在构造函数中出现异常导致资源泄露：
+
+BookEntry::BookEntry(){
+    theImage     = new Image(imageFileName);
+    theAudioClip = new AudioClip(audioClipFileName);
+}
+BookEntry::~BookEntry(){
+    delete theImage;
+}
+
+如果在构造函数new AudioClip里面出现异常的话，那么~BookEntry析构函数就不会执行，那么NewImage就永远不会被删除，
+而且因为new BookEntry失败，导致delete BookEntry也无法释放theImage，那么只能在构造函数里面使用异常来避免这个问题
+
+BookEntry::BookEntry()
+{
+    try
+    {
+        theImage     = new Image(imageFileName);
+        theAudioClip = new AudioClip(audioClipFileName);
+    }
+    catch(...)
+    {
+        delete theImage;
+        delete theAudioClip;
+        //上面一段代码和析构函数里面的一样，所以可以直接封装成一个成员函数cleanup：
+        cleanup();
+        throw;
+    }
+}
+
+更好的做法是将theImage和theAudioClip做成成员来进行封装：
+
+class BookEntry
+{
+public:......
+private:
+    const auto_ptr<Image> theImage;
+    const auto_ptr<AudioClip> theAudioClip;
+}
+
+在C++11中，要想处理构造函数初始值列表抛出的异常，必须将构造函数写成函数try语句块（function try block）的形式。
+函数try语句块使得一组catch语句可以同时处理构造函数体和构造函数初始化过程中的异常。
+
+template <typename T>
+Blob<T>::Blob(std::initializer_list<T> il) try :
+    data(std::make_shared<std::vector<T>>(il))
+{
+    /* empty body */
+}
+catch(const std::bad_alloc &e)
+{
+    handle_out_of_memory(e);
+}
+
+函数try语句块的catch语句会在结尾处隐式地重新抛出异常，通知上层函数对象构造失败。上层函数需要继续处理该异常。
+
+在初始化构造函数参数时发生的异常不属于函数try语句块处理的范围。
+
+
+阻止异常传递到析构函数以外
+
+如果析构函数抛出异常的话，会导致程序直接调用terminate函数，中止程序而不释放对象，所以不应该让异常传递到析构函数外面，而是应该在析构函数里面直接catch并且处理掉
+
+另外，如果析构函数抛出异常的话，那么析构函数就不会完全运行，就无法完成希望做的一些其他事情例如：
+
+Session::~Session()
+{
+    logDestruction(this);
+    endTransaction(); //结束database transaction,如果上面一句失败的话，下面这句就没办法正确执行了
+}
+
+
+理解“抛出异常”，“传递参数”和“调用虚函数”之间的不同
+
+传递参数的函数：
+
+void f1(Widget w);
+
+catch子句：
+
+catch(widget w)... 
+
+上面两行代码的相同点：传递函数参数与异常的途径可以是传值、传递引用或者传递指针
+
+上面两行代码的不同点：系统所需要完成操作的过程是完全不同的。调用函数时程序的控制权还会返回到函数的调用处，但是抛出一个异常时，控制权永远都不会回到抛出异常的地方
+三种捕获异常的方法：
+
+catch(Widget w);
+catch(Widget& w);
+catch(const Widget& w);
+
+一个被抛出的对象可以通过普通的引用捕获，它不需要通过指向const对象的引用捕获，但是在函数调用中不允许传递一个临时对象到一个非const引用类型的参数里面
+同时异常抛出的时候实际上是抛出对象创建的临时对象的拷贝，
+
+另外一个区别就是在try语句块里面，抛出的异常不会进行类型转换（除了继承类和基类之间的类型转换，和类型化指针转变成无类型指针的变换），例如：
+
+void f(int value)
+{
+    try{
+        throw value; //value可以是int也可以是double等其他类型的值
+    }
+    catch(double d){
+        ....         //这里只处理double类型的异常，如果遇到int或者其他类型的异常则不予理会
+    }
+}
+
+最后一个区别就是，异常catch的时候是按照顺序来的，即如果两个catch并且存在的话，会优先进入到第一个catch里面，但是函数则是匹配最优的
+
+
+通过引用捕获异常
+
+使用指针方式捕获异常：不需要拷贝对象，是最快的,但是，程序员很容易忘记写static，如果忘记写static的话，会导致异常在抛出后，因为离开了作用域而失效：
+
+void someFunction()
+{
+    static exception ex;
+    throw &ex;
+}
+void doSomething()
+{
+    try
+    {
+        someFunction();
+    }
+    catch(exception *ex){...}
+}
+
+通过new对象抛出类型为指针的异常：不会出现异常失效的问题，但是会出现在捕捉以后是否应该删除他们接受的指针，在哪一个层级删除指针的问题
+通过值捕获异常：不会出现上述问题，但是会在被抛出时系统将异常对象拷贝两次，而且会出现派生类和基类的slicing problem，
+即派生类的异常对象被作为基类异常对象捕获时，会把派生类的一部分切掉，例如：
+
+class exception
+{
+public:
+    virtual const char *what() throw();
+};
+class runtime_error : public exception{...};
+
+void someFunction()
+{
+    if(true)
+{
+        throw runtime_error();
+    }
+}
+void doSomething()
+{
+    try
+    {
+        someFunction();
+    }
+    catch(exception ex)
+    {
+        cerr << ex.what(); //这个时候调用的就是基类的what而不是runtime_error里面的what了，而这个并不是我们想要的
+    }
+}
+
+通过引用捕获异常：可以避免上面所有的问题，异常对象也只会被拷贝一次：
+
+void someFunction(){...} //和上面一样
+void doSomething()
+{
+    try{...}             //和上面一样
+    catch(exception& ex)
+    {
+        cerr << ex.what(); //这个时候就是调用的runtime_error而不是基类的exception::what()了，其他和上面其实是一样的
+    }
+}
+
+
+谨慎使用异常规格（exception specifications）
+
+异常规格指的是函数指定只能抛出异常的类型：
+
+extern void f1();    //f1可以抛出任意类型的异常
+void f2() throw(int);//f2只能抛出int类型的异常
+void f2() throw(int)
+{ 
+     f1();           //编译器会因为f1和f2的异常规格不同而在发出异常的时候调用unexpected
+}
+
+在用模板的时候，会让这种情况更为明显：
+
+template<class T>
+bool operator==(const T& lhs, const T&rhs) throw()
+{
+    return &lhs == &rhs;
+}
+
+这个模板为所有的类型定义了一个操作符函数operator==对于任意一对相同类型的对象，如果有一样的地址，则返回true，否则返回false，单单这么一个函数可能不会抛出异常，
+但是如果有operator&重载时，operator&可能会抛出异常，这样就违反了异常规则，让程序跳转到unexpected
+
+阻止程序跳转到unexpected的三种方法： 
+将所有的unexpected异常都替换成UnexpectedException对象：
+
+class UnexpectedException{}; //所有的unexpected异常对象都被替换成这种对象
+void convertUnexpected(){       //如果一个unexpected异常被抛出，这个函数就会被调用
+    throw UnexpectedException();
+}
+set_unexpected(convertUnexpected);
+
+替换unexpected函数：
+
+void convertUnexpected()
+{
+    //如果一个unexpected异常被抛出，这个函数被调用
+    throw;                //只是重新抛出当前的异常
+}
+set_unexpected(convertUnexpected);
+
+异常规格应该在加入之前谨慎的考虑它带来的行为是否是我们所希望的
+
+
+通过函数重载避免隐式类型转换
+
+改代码之前：
+
+class UPInt
+{
+public:
+    UPInt();
+    UPInt(int value);
+}
+const UPInt operator+(const UPInt& lhs, const UPInt& rhs);
+upi3 = upi1 + upi2;
+upi3 = 10 + upi1;  // 会产生隐式类型转换，转换过程中会出现临时对象
+upi3 = upi1 + 10;
+
+改代码之后：
+
+const UPInt operator+(const UPInt& lhs, const UPInt& rhs);
+const UPInt operator+(const UPInt& lhs, int rhs);
+const UPInt operator+(int lhs, const UPInt& rhs);
+
+考虑使用op=来取代单独的op运算符
+
+operator+ 和operator+=是不一样的，所以如果想要重载+号，就最好重载+=，那么一个比较好的方法就是把+号用+=来实现，当然如果可以的话，可以使用模板编写：
+
+template<class T>
+const T operator+(const T& lhs, const T& rhs)
+{
+    return T(lhs) += rhs;
+}
+template<class T>
+const T operator-(const T& lhs, const T& rhs)
+{
+    return T(lhs) -= rhs; 
+}
+
+
+理解虚函数、多重继承、虚基类以及RTTI所带来的开销
+
+大多数编译器使用virtual table(vtbl)和virtual table pointers(vptr)来实现虚函数
+
+vtbl:
+
+class C1
+{
+public:
+    C1();
+    virtual ~C1();
+    virtual void f1();
+    virtual int f2(char c)const;
+    virtual void f3(const string& s);
+    void f4()const
+}
+
+vtbl的虚拟表类似于下面这样,只有虚函数在里面，非虚函数的f4不在里面：
+
+ ___
+|___| → ~C1()
+|___| → f1()
+|___| → f2()
+|___| → f3()
+
+如果按照上面的这种，每一个虚函数都需要一个地址空间的话，那么如果拥有大量虚函数的类，就会需要大量的地址存储这些东西，这个vtbl放在哪里根据编译器的不同而不同
+
+vptr：
+
+ __________
+|__________| → 存放类的数据
+|__________| → 存放vptr
+
+每一个对象都只存储一个指针，但是在对象很小的时候，多余的vptr将会看起来非常占地方。在使用vptr的时候，编译器会先通过vptr找到对应的vtbl，然后通过vtbl开始找到指向的函数 
+事实上对于函数：
+pC1->f1();
+他的本质是：
+(*pC1->vptr[i])(pC1);
+在使用多重继承的时候，会有多个vptr
+
+RTTI：能够让我们在runtime找到对象的类信息，那么就肯定有一个地方存储了这些信息，这个特性也可以使用vtbl实现，
+把每一个对象，都添加一个隐形的数据成员type_info，来存储这些东西，从而占用很大的空间
+
+
+使构造函数和非成员函数具有虚函数的行为
+
+class NLComponent
+{
+    		//用于 newsletter components
+public:                   // 的抽象基类
+    ...                       //包含至少一个纯虚函数
+};
+class TextBlock: public NLComponent
+{
+public:
+    ...                             // 不包含纯虚函数
+};
+class Graphic: public NLComponent
+{
+public:
+    ...                             // 不包含纯虚函数
+};
+class NewsLetter
+{
+    		    // 一个 newsletter 对象
+public:                      // 由 NLComponent 对象
+    ...                           // 的链表组成
+private:
+    list<NLComponent *> components;
+};
+
+class NewsLetter
+{
+public:
+    NewsLetter(istream& str);
+private:
+    static NLComponent *readComponent(istream& str);
+    virtual NLComponent *clone() const = 0;
+};
+
+NewsLetter::NewsLetter(istream& str)
+{
+    while(str)
+    {
+        components.push_back(readComponent(str));
+    }
+}
+readComponent根据所读取的数据建立了一个新对象，或是 TextBlock 或是 Graphic。因为它能建立新对象，它的行为与构造函数相似，而且因为它能建立不同类型的对象，我们称它为虚拟构造函数。虚拟构造函数是指能够根据输入给它的数据的不同而建立不同类型的对象。
+
+class NLComponent
+{
+public:   // declaration of virtual copy constructor
+    virtual NLComponent *clone() const = 0;
+    ...
+};
+class TextBlock: public NLComponent
+{
+public:
+    virtual TextBlock *clone() const          // virtual copy
+    {
+        return new TextBlock(*this);    // constructor
+    }
+    ...
+};
+class Graphic: public NLComponent
+{
+public:
+    virtual Graphic *clone() const             // virtual copy
+    {
+        return new Graphic(*this);    // constructor
+    }
+    ...
+};
+
+clone() 叫做虚拟拷贝构造函数,相当于拷贝一个新的对象
+
+通过这种方法，我们上面的NewsLetter构造函数就可以这样：
+
+class NewsLetter
+{
+public:
+    NewsLetter(const NewsLetter &rhs);
+    ...
+private:
+    list<NLComponent *> components;
+};
+
+NewsLetter::NewsLetter(const NewsLetter &rhs)
+{
+    for (list<NLComponent *>::const_iterator it = rhs.components.begin();
+            it != rhs.components.end(); ++it)
+    {
+        components.push_back((*it)->clone());
+    }
+}
+
+这样每一个TextBlock都可以调用他自己的clone，其他的子类也可以调用他们自己对应的clone()
+
+
+限制类对象的个数
+
+比如某个类只应该有一个对象，那么最简单的限制这个个数的方法就是把构造函数放在private域里面，这样每个人都没有权力创建对象
+
+或者做一个约束，每次创建的时候都返回static的对象：
+
+class Printer
+{
+public:
+    friend Printer& thePrinter();或者static Printer& thePrinter();
+private:
+    Printer();
+    Printer(const Printer& rhs);
+};
+Printer& thePrinter()
+{
+    static Printer p;
+    return p;
+}
+
+上面这段代码中，Printer类的构造函数是private，可以阻止建立对象，全局函数thePrinter被声明为类的友元，让thePrinter避免私有构造函数引起的限制
+
+一个具有对象计数功能的基类： 如果拥有大量像Printer这样的类需要进行计数，那么较好的方法就是一次性封装所有的计数功能,
+需要确保每个进行实例计数的类都有一个相互隔离的计数器，所以模板会比较好:
+
+template <class BeingCounted>
+class Counted
+{
+public:
+    class TooManyObjects{};
+    static int objectCount(){return numObjects;}
+protected:
+    Counted();
+    Counted(const Counted& rhs);
+    ~Counted(){ --numObjects; }
+private:
+    static int numObjects;
+    static const size_t maxObjects;
+    void init();                 //避免构造函数的代码重复
+};
+
+template<class BeingCounted>
+Counted<BeingCounted>::Counted(){init();}
+
+template<class BeingCounted>
+Counted<BeingCounted>::Counted(const Counted<BeingCounted>&){init();}
+
+template<class BeingCounted>
+void Counted<BeingCounted>::init()
+{
+    if(numObjects >= maxObjects)throw TooManyObjects();
+    ++numObjects;
+}
+
+class Printer:private Counted<Printer>
+{
+public:
+    static Printer* makePrinter(); // 伪构造函数
+    using Counted<Printer>::objectCount;
+    using Counted<Printer>::TooManyObjects;
+}
+
+
+判断一个地址是否在堆中，一种方法是与局部栈变量所在的地址进行比较，因为stack是从高位地址向下的，heap是从地位地址向上的：
+
+bool onHeap(const void *address)
+{ 
+    char onTheStack; // 局部栈变量，因为他是新的变量，所以比他小的都在堆或者静态空间里面，比他大的都在栈里面
+    return address < &onTheStack; 
+}
+
+
+代理类
+
+例子：实现二维数组类：
+
+template<class T>
+class Array2D
+{
+public:
+    Array2D(int dim1, int dim2);
+    class Array1D
+    {
+    public:
+        T& operator[](int index);
+        const T& operator[](int index) const;
+    };
+    Array1D operator[](int index);
+    const Array1D operator[](int index) const;
+};
+Array2D<int> data(10, 20);
+cout << data[3][6] //这里面的[][]运算符是通过两次重载实现的
+
+例子：代理类区分[]操作符的读写：
+
+采用延迟计算方法，修改operator[]让他返回一个（代理字符的）proxy对象而不是字符对象本身，并且判断之后这个代理字符怎么被使用，从而判断是读还是写操作
+
+class String
+{
+public:
+    class CharProxy
+    {
+    public:
+        CharProxy(String& str, int index);
+        CharProxy& operator=(const CharProxy& rhs);
+        CharProxy& operator=(char c);
+        operator char() const;
+    private:
+        String& theString;
+        int charIndex;
+    };
+    const CharProxy operator[](int index) const;//对于const的Strings
+    CharProxy operator[](int index);            //对于non-const的Strings
+
+    friend class CharProxy;
+private:
+    RCPtr<StringValue> value;
+};
+
+
+基于多个对象的虚函数
+
+考虑两个对象碰撞的问题：
+
+class GameObject{....};
+class SpaceShip : public GameObject{....};
+class SpaceStation : public GameObject{....};
+class Asteroid : public GameObject{....};
+
+void checkForCollision(GameObject& object1, GameObject& object2){
+    processCollision(object1, object2);
+}
+
+当我们调用processCollision的时候，该函数取决于两个不同的对象，但是这个函数并不知道其object1和object2的真实类型，这个时候就要基于多个对象设计虚函数
+
+使用虚函数+RTTI：
+
+class GameObject
+{
+public:
+    virtual void collide(GameObject& otherObject) = 0;
+};
+class SpaceShip:public GameObject
+{
+public:
+    virtual void collide(GameObject& otherObject);
+};
+
+void SpaceShip:collide(GameObject& otherObject)
+{
+    const type_info& objectType = typeid(otherObject);
+    if(objectType == typeid(SpaceShip))
+    {
+        SpaceShip& ss = static_cast<SpaceShip&>(otherObject);
+    }
+    else if(objectType == typeid(SpaceStation)).......
+}
+
+
+将非尾端类设计为抽象类
+
+如果采用这样的代码：
+
+class Animal{
+public:
+    virtual Animal& operator=(const Animal& rhs);
+    ....
+};
+class Lizard:public Animal{
+public:
+    virtual Lizard& operator=(const Animal& rhs);
+};
+class Chicken:public Animal{
+public:
+    virtual Chicken& operator=(const Animal& rhs);
+}
+
+则会出现我们不愿意出现的类型转换和赋值：
+
+Animal *pAnimal1 = &liz;
+Animal *pAnimal2 = &chick;
+*pAnimal1 = *pAnimal2;      //把一个chick赋值给了一个lizard
+
+但是我们又希望下面的操作是可行的： 
+Animal *pAnimal1 = &liz1; 
+Animal *pAnimal2 = &liz2;
+*pAnimal1 = *pAnimal2; //正确，把一个lizard赋值给了一个lizard
+
+解决这个问题最简单的方法是使用dynamic_cast进行类型检测，但是还有一个方法就是把Animal设成抽象类或者创建一个抽象Animal类：
+
+class AbstractAnimal
+{
+protected:
+    AbstractAnimal& operator=(const AbstractAnimal& rhs);
+public:
+    virtual ~AbstractAnimal() = 0;
+};
+
+class Animal: public AbstractAnimal
+{
+public:
+    Animal& operator=(const Animal& rhs);
+};
+class Lizard:public AbstractAnimal{
+public:
+    virtual Lizard& operator=(const Animal& rhs);
+};
+class Chicken:public AbstractAnimal{
+public:
+    virtual Chicken& operator=(const Animal& rhs);
+}
+
+
+理解如何在同一程序中混合使用C
+
+名字变换：就是在编译器分别给C++和C不同的前缀，在C语言中，因为没有函数重载，所以编译器没有专门给函数改变名字，但是在C++里面，编译器是要给函数不同的名字的。
+
+C++的extern 'C'可以禁止进行名字变换，例如：
+
+extern 'C'
+void drawLine(int x1, int y1, int x2, int y2);
+
+静态初始化：在C++中，静态的类对象和定义会在main执行前执行。 在编译器中，这种处理方法通常是在main里面默认调用某个函数：
+
+int main(int argc, char *argv[]){
+    performStaticInitialization();
+
+    realmain();
+
+    performStaticDestruction();
+}
+
+动态内存分配：C++时候new和delete，C是malloc和free
+
+数据结构的兼容性：C无法知道C++的特性
+
+将在两种语言下都使用的函数声明为extern 'C'
+
+
+虚函数也可以有默认实参，每次函数调用的默认实参值由本次调用的静态类型决定。
+如果通过基类的指针或引用调用函数，则使用基类中定义的默认实参，即使实际运行的是派生类中的函数版本也是如此。
+
+如果虚函数使用默认实参，则基类和派生类中定义的默认实参值最好一致。
+
+使用作用域运算符::可以强制执行虚函数的某个版本，不进行动态绑定。
+
+// calls the version from the base class regardless of the dynamic type of baseP
+double undiscounted = baseP->Quote::net_price(42);
+
+通常情况下，只有成员函数或友元中的代码才需要使用作用域运算符来回避虚函数的动态绑定机制。
+
+如果一个派生类虚函数需要调用它的基类版本，但没有使用作用域运算符，则在运行时该调用会被解析为对派生类版本自身的调用，从而导致无限递归。
+
+在类内部虚函数声明语句的分号前添加=0可以将一个虚函数声明为纯虚（pure virtual）函数。一个纯虚函数无须定义。
+
+double net_price(std::size_t) const = 0;
+
+可以为纯虚函数提供定义，但函数体必须定义在类的外部。
+
+含有（或未经覆盖直接继承）纯虚函数的类是抽象基类。抽象基类负责定义接口，而后续的其他类可以覆盖该接口。
+
+不能创建抽象基类的对象。
+
+派生类构造函数只初始化它的直接基类。
+
+只要能创建虚基类的派生类对象，该派生类的构造函数就必须初始化它的虚基类。即使虚基类不是派生类的直接基类，构造函数也可以进行初始化。
+
+class ZooAnimal { /* ... */ };
+
+// the order of the keywords public and virtual is not significant
+class Raccoon : public virtual ZooAnimal { /* ... */ };
+class Bear : virtual public ZooAnimal { /* ... */ };
+
+class Endangered { /* ... */ };
+
+class Panda : public Bear, public Raccoon, public Endangered { /* ... */ };
+
+Bear::Bear(std::string name, bool onExhibit)
+    : ZooAnimal(name, onExhibit, "Bear") { }
+
+Raccoon::Raccoon(std::string name, bool onExhibit)
+    : ZooAnimal(name, onExhibit, "Raccoon") { }
+
+Panda::Panda(std::string name, bool onExhibit)
+    : ZooAnimal(name, onExhibit, "Panda"),
+      Bear(name, onExhibit),
+      Raccoon(name, onExhibit),
+      Endangered(Endangered::critical),
+      sleeping flag(false) { }
+
+构造含有虚基类的对象时，首先使用提供给最低层派生类构造函数的初始值初始化该对象的虚基类子部分，
+之后再按照直接基类在派生列表中出现的顺序依次对其初始化。
+
+一个类可以有多个虚基类，此时这些虚子对象按照它们在派生列表中出现的顺序依次构造。
+
+一个类可以使用protected关键字来声明外部代码无法访问，但是派生类对象可以访问的成员。
+
+派生类的成员或友元只能通过派生类对象来访问基类的protected成员。派生类对于一个基类对象中的protected成员没有任何访问权限。
+
+class Base
+{
+protected:
+    int prot_mem;   // protected member
+};
+
+class Sneaky : public Base
+{
+    friend void clobber(Sneaky&);   // can access Sneaky::prot_mem
+    friend void clobber(Base&);     // can't access Base::prot_mem
+    int j;   // j is private by default
+};
+
+// ok: clobber can access the private and protected members in Sneaky objects
+void clobber(Sneaky &s) { s.j = s.prot_mem = 0; }
+// error: clobber can't access the protected members in Base
+void clobber(Base &b) { b.prot_mem = 0; }
+
+基类中成员的访问说明符和派生列表中的访问说明符都会影响某个类对其继承成员的访问权限。
+
+派生访问说明符对于派生类的成员及友元能否访问其直接基类的成员没有影响，对基类成员的访问权限只与基类中的访问说明符有关。
+
+派生访问说明符的作用是控制派生类（包括派生类的派生类）用户对于基类成员的访问权限。
+如果使用公有继承，则基类的公有成员和受保护成员在派生类中属性不发生改变。
+如果使用受保护继承，则基类的公有成员和受保护成员在派生类中变为受保护成员。
+如果使用私有继承，则基类的公有成员和受保护成员在派生类中变为私有成员。
+
+派生类到基类转换的可访问性（假定D继承自B）：
+只有当D公有地继承B时，用户代码才能使用派生类到基类的转换。
+不论D以什么方式继承B，D的成员函数和友元都能使用派生类到基类的转换。
+如果D继承B的方式是公有的或者受保护的，则D的派生类的成员函数和友元可以使用D到B的类型转换；反之，如果D继承B的方式是私有的，则不能使用。
+
+对于代码中的某个给定节点来说，如果基类的公有成员是可访问的，则派生类到基类的类型转换也是可访问的。
+
+友元对基类的访问权限由基类自身控制，即使对于派生类中的基类部分也是如此。
+
+class Base
+{
+    // added friend declaration; other members as before
+    friend class Pal;   // Pal has no access to classes derived from Base
+};
+
+class Pal
+{
+public:
+    int f(Base b) { return b.prot_mem; }     // ok: Pal is a friend of Base
+    int f2(Sneaky s) { return s.j; }         // error: Pal not friend of Sneaky
+    // access to a base class is controlled by the base class, even inside a derived object
+    int f3(Sneaky s) { return s.prot_mem; }  // ok: Pal is a friend
+};
+
+友元关系不能继承，每个类负责控制各自成员的访问权限。
+
+使用using声明可以改变派生类继承的某个名字的访问级别。新的访问级别由该using声明之前的访问说明符决定。
+
+class Base
+{
+public:
+    std::size_t size() const { return n; }
+protected:
+    std::size_t n;
+};
+
+class Derived : private Base
+{ // note: private inheritance
+public:
+    // maintain access levels for members related to the size of the object
+    using Base::size;
+protected:
+    using Base::n;
+};
+
+派生类只能为那些它可以访问的名字提供using声明。
+
+默认情况下，使用class关键字定义的派生类是私有继承的，而使用struct关键字定义的派生类是公有继承的。
+
+建议显式地声明派生类的继承方式，不要仅仅依赖于默认设置。
+
+当存在继承关系时，派生类的作用域嵌套在其基类的作用域之内。
+
+一个对象、引用或指针的静态类型决定了该对象的哪些成员是可见的。
+
+派生类定义的成员会隐藏同名的基类成员。
+
+struct Base
+{
+protected:
+    int mem;
+};
+
+struct Derived : Base
+{
+    int get_mem() { return mem; }   // returns Derived::mem  
+protected:
+    int mem;    // hides mem in the base
+};
+
+可以通过作用域运算符::来使用被隐藏的基类成员。
+
+struct Derived : Base
+{
+    int get_base_mem() { return Base::mem; }
+    // ...
+};
+
+除了覆盖继承而来的虚函数之外，派生类最好不要重用其他定义在基类中的名字。
+
+和其他函数一样，成员函数无论是否是虚函数都能被重载。
+
+派生类可以覆盖重载函数的0个或多个实例。如果派生类希望所有的重载版本对它来说都是可见的，那么它就需要覆盖所有版本，或者一个也不覆盖。
+
+有时一个类仅需覆盖重载集合中的一些而非全部函数，此时如果我们不得不覆盖基类中的每一个版本的话，操作会极其繁琐。
+为了简化操作，可以为重载成员提供using声明。using声明指定了一个函数名字但不指定形参列表，所以一条基类成员函数的using声明语句就可以把该函数的所有重载实例添加到派生类作用域中。
+
+class Base
+{
+private:
+    int x;
+    
+public:
+    virtual void mf1() = 0;
+    virtual void mf1(int);
+    virtual void mf2();
+    void fm3();
+    void fm3(double);
+};
+
+class Derived : public Base
+{
+public:
+    // 让Base内名为mf1和mf3的所有定义
+    // 在Derived作用域内可见
+    using Base::mf1;
+    using Base::mf3;
+    virtual void mf1();
+    void fm3();
+    void fm4();
+};
+
+类内使用using声明改变访问级别的规则同样适用于重载函数的名字。
+
+
+C++11新增了内联命名空间（inline namespace）。和一般的嵌套命名空间不同，内联命名空间中的名字可以被外层命名空间直接使用。定义内联命名空间的方式是在namespace前添加关键字inline。inline必须出现在该命名空间第一次定义的地方。
+
+inline namespace FifthEd
+{
+    // namespace for the code from the Primer Fifth Edition
+}
+
+namespace FifthEd
+{   // implicitly inline
+    class Query_base { /* ... */ };
+    // other Query-related declarations
+}
+
+当应用程序的代码在两次发布之间发生了改变时，通常会使用内联命名空间。
+
+namespace FourthEd
+{
+    class Item_base { /* ... */};
+    class Query_base { /* ... */};
+    // other code from the Fourth Edition
+}
+
+namespace cplusplus_primer
+{
+    #include "FifthEd.h"
+    #include "FourthEd.h"
+}
+
+因为FifthEd是内联的，所以形如cplusplus_primer::的代码可以直接获得FifthEd的成员。如果想使用早期版本，则必须加上完整的外层命名空间名字。
+
+未命名的命名空间（unnamed namespace）指关键字namespace后紧跟以花括号包围的一系列声明语句。
+未命名的命名空间中定义的变量拥有静态生命周期：它们在第一次使用前创建，直到程序结束才销毁。
+
+一个未命名的命名空间可以在某个给定的文件内不连续，但是不能跨越多个文件。每个文件定义自己的未命名的命名空间。
+如果一个头文件定义了未命名的命名空间，则该命名空间中定义的名字在每个包含该头文件的文件中对应不同实体。
+
+定义在未命名的命名空间中的名字可以直接使用，不能对其使用作用域运算符。
+
+定义在未命名的命名空间中的名字的作用域与该命名空间所在的作用域相同。
+如果未命名的命名空间定义在最外层作用域中，则该命名空间中的名字必须要与全局作用域中的名字有所区别。
+
+int i; // global declaration for i
+namespace
+{
+    int i;
+}
+// ambiguous: defined globally and in an unnested, unnamed namespace
+i = 10;
+
+namespace local
+{
+    namespace
+    {
+        int i;
+    }
+}
+// ok: i defined in a nested unnamed namespace is distinct from global i
+local::i = 42;
+
+在标准C++引入命名空间的概念之前，程序需要将名字声明为static的以令其对整个文件有效。
+在文件中进行静态声明的做法是从C语言继承而来的。在C语言中，声明为static的全局实体在其所在的文件之外不可见。
+该做法已经被C++标准取消，现在应该使用未命名的命名空间。
+
+可以使用关键字namespace和=为命名空间定义别名（namespace alias）。别名必须出现在命名空间的定义之后。
+
+namespace primer = cplusplus_primer;
+
+一个命名空间可以有多个别名，它们都与命名空间的原名等价。
+
+匿名联合（anonymous union）没有名称，其成员将成为位于相同地址处的变量，
+显然，每次只有一个成员是当前的成员。
+struct widget
+{
+    char brand[32];
+    int type;
+    union 
+    {
+        long id_num;
+        char id_char[20];
+    };
+};
+
+
+匿名联合（anonymous union）是一个未命名的联合，并且在右花括号和分号之间没有任何声明。
+一旦定义了一个匿名联合，编译器就会自动地为该联合创建一个未命名的对象。在匿名联合的定义所在的作用域内，该联合的成员都是可以直接访问的。
+
+union
+{   // anonymous union
+    char cval;
+    int ival;
+    double dval;
+};  // defines an unnamed object, whose members we can access directly
+
+cval = 'c';   // assigns a new value to the unnamed, anonymous union object
+ival = 42;    // that object now holds the value 42
+
+匿名联合不能包含protected和private成员，也不能定义成员函数。
+
+C++的早期版本规定，在联合中不能含有定义了构造函数或拷贝控制成员的类类型成员。
+C++11取消了该限制。但是如果联合的成员类型定义了自己的构造函数或拷贝控制成员，该联合的用法会比只含有内置类型成员的联合复杂得多。
+当联合只包含内置类型的成员时，可以使用普通的赋值语句改变联合的值。
+但是如果想将联合的值改为类类型成员对应的值，或者将类类型成员的值改为一个其他值，则必须构造或析构该类类型的成员。
+当联合只包含内置类型的成员时，编译器会按照成员顺序依次合成默认构造函数或拷贝控制成员。
+但是如果联合含有类类型成员，并且该类型自定义了默认构造函数或拷贝控制成员，则编译器会为该联合合成对应的版本并将其声明为删除的。
+
+对于联合来说，构造或销毁类类型成员的操作非常复杂。通常情况下，可以把含有类类型成员的联合内嵌在另一个类中，
+这个类可以管理并控制与联合的类类型成员相关的状态转换。
+
+class Token
+{
+    friend std::ostream &operator<<(std::ostream &, const Token &);
+public:
+    Token() : tok(INT), ival{0} {}
+    Token(const Token &t) : tok(t.tok)
+    {
+        copyUnion(t);
+    }
+    Token(Token &&t) noexcept : tok(std::move(t.tok))
+    {
+        moveUnion(std::move(t));
+    }
+    Token &operator=(const Token &);
+    Token &operator=(Token &&) noexcept;
+    ~Token()
+    {
+        freeUnion();
+    }
+    Token &operator=(const std::string &);
+    Token &operator=(char);
+    Token &operator=(int);
+    Token &operator=(double);
+    Token &operator=(const Sales_data &);
+private:
+    enum { INT, CHAR, DBL, STR, SALE } tok;
+    union
+    {
+        char cval;
+        int ival;
+        double dval;
+        std::string sval;
+        Sales_data sdata;
+    };
+    void copyUnion(const Token &);
+    void moveUnion(Token &&t);
+    void freeUnion();
+};
+
+inline void Token::freeUnion()
+{
+    if(tok == STR)
+        sval.std::string::~string();
+    if(tok == SALE)
+        sdata.~Sales_data();
+}
+
+std::ostream &operator<<(std::ostream &os, const Token &t)
+{
+    switch(t.tok)
+    {
+    case Token::INT:
+        os << t.ival;
+        break;
+    case Token::CHAR:
+        os << t.cval;
+        break;
+    case Token::DBL:
+        os << t.dval;
+        break;
+    case Token::STR:
+        os << t.sval;
+        break;
+    case Token::SALE:
+        os << t.sdata;
+        break;
+    }
+    return os;
+}
+
+Token &Token::operator=(int i)
+{
+    freeUnion();
+    ival = i;
+    tok = INT;
+    return *this;
+}
+
+Token &Token::operator=(char c)
+{
+    freeUnion();
+    cval = c;
+    tok = CHAR;
+    return *this;
+}
+
+Token &Token::operator=(double d)
+{
+    freeUnion();
+    dval = d;
+    tok = DBL;
+    return *this;
+}
+
+Token &Token::operator=(const std::string &s)
+{
+    std::string stmp = s;
+    freeUnion();
+    new (&sval) std::string(std::move(stmp));
+    tok = STR;
+    return *this;
+}
+Token &Token::operator=(const Sales_data &item)
+{
+    Sales_data itmp = item;
+    freeUnion();
+    new (&sdata) Sales_data(std::move(itmp));
+    tok = SALE;
+    return *this;
+}
+
+void Token::copyUnion(const Token &t)
+{
+    switch (t.tok)
+    {
+    case Token::INT:
+        ival = t.ival;
+        break;
+    case Token::CHAR:
+        cval = t.cval;
+        break;
+    case Token::DBL:
+        dval = t.dval;
+        break;
+    case Token::STR:
+        new (&sval) std::string(t.sval);
+        break;
+    case Token::SALE:
+        new (&sdata) Sales_data(t.sdata);
+        break;
+    }
+}
+
+void Token::moveUnion(Token &&t)
+{
+    switch (t.tok)
+    {
+    case Token::INT:
+        ival = std::move(t.ival);
+        break;
+    case Token::CHAR:
+        cval = std::move(t.cval);
+        break;
+    case Token::DBL:
+        dval = std::move(t.dval);
+        break;
+    case Token::STR:
+        new (&sval) std::string(std::move(t.sval));
+        break;
+    case Token::SALE:
+        new (&sdata) Sales_data(std::move(t.sdata));
+        break;
+    }
+}
+
+Token &Token::operator=(const Token &t)
+{
+    if (this == &t)
+    {
+        return *this;
+    }
+    if (tok == STR && t.tok != STR) sval.std::string::~string();
+    if (tok == SALE && t.tok != SALE) sdata.~Sales_data();
+    if (tok == STR && t.tok == STR)
+        sval = t.sval;
+    else if (tok == SALE && t.tok == SALE)
+        sdata = t.sdata;
+    else
+        copyUnion(t);
+    tok = t.tok;
+    return *this;
+}
+
+Token &Token::operator=(Token &&t) noexcept
+{
+    if(this != &t)
+    {
+        freeUnion();
+        moveUnion(std::move(t));
+        tok = std::move(t.tok);
+    }
+    return *this;
+}
+
+关键字static被用在作用域为整个文件的声明中时，表示内部链接性；
+被用于局部声明中，表示局部变量的存储持续性为静态的。
+关键字exterm表明是引用声明，即声明引用在其他地方定义的变量。
+关键字thread_local指出变量的持续性与其所属线程的持续性相同。
+thread_local变量之于线程，犹如常规静态变量之于整个程序。
+关键字mutable的含义将根据const来解释。
+下面是限定符：
+const；
+volatile；
+const表明内存被初始化后，程序便不能再对它进行修改。
+volatile表明，即使程序代码没有对内存单元进行修改，其值也可能发生变化。
+该关键字的作用是为了改善编译器的优化能力。
+例如，假设编译器发现，程序在几条语句中两次使用了某个变量的值，则编译器可能不是让程序查找这个值两次，
+而是将这个值缓存到寄存器中。这种优化假设变量的值在这两次使用之间不会变化。
+如果不将变量声明为volatile，则编译器将进行这种优化；将变量声明为volatile，相当于告诉编译器，不要进行这种优化。
+可以用mutable来指出，即使结构（或类）变量为const，其某个成员也可以被修改。
+在C++中const限定符对默认存储类型稍有影响。
+在默认情况下全局变量的链接性为外部的，但const全局变量的链接性为内部的。
+也就是说，在C++看来，全局const定义就像使用了static说明符一样。
+如果出于某种原因，程序员希望某个常量的链接性为外部的，则可以使用extern关键字来覆盖默认的内部链接性。
+在这种情况下，必须在所有使用该常量的文件中使用exten关键字来声明它，且只有一个文件对其进行初始化。
+这与常规外部变量不同，定义常规外部变量时，不必使用extern关键字，但在使用该变量的其他文件中必须使用extern。
+在函数或代码块中声明const时，其作用域为代码块，仅当程序执行该代码块中的代码时，该常量才是可用的。
+这意味着在函数或代码块中创建常量时，不必担心其名称与其他地方定义的常量发生冲突。
+
+
+虚析构函数会阻止编译器为类合成移动操作。
+
+对于派生类的析构函数来说，它除了销毁派生类自己的成员外，还负责销毁派生类直接基类的成员。
+
+派生类中删除的拷贝控制与基类的关系：
+如果基类中的默认构造函数、拷贝构造函数、拷贝赋值运算符或析构函数是被删除的或者不可访问的函数，则派生类中对应的成员也会是被删除的。
+因为编译器不能使用基类成员来执行派生类对象中基类部分的构造、赋值或销毁操作。
+如果基类的析构函数是被删除的或者不可访问的，则派生类中合成的默认和拷贝构造函数也会是被删除的。因为编译器无法销毁派生类对象中的基类部分。
+编译器不会合成一个被删除的移动操作。当我们使用=default请求一个移动操作时，如果基类中对应的操作是被删除的或者不可访问的，则派生类中的操作也会是被删除的。因为派生类对象中的基类部分不能移动。同样，如果基类的析构函数是被删除的或者不可访问的，则派生类的移动构造函数也会是被删除的。
+
+在实际编程中，如果基类没有默认、拷贝或移动构造函数，则一般情况下派生类也不会定义相应的操作。
+
+因为基类缺少移动操作会阻止编译器为派生类合成自己的移动操作，所以当我们确实需要执行移动操作时，应该首先在基类中进行定义。
+
+当派生类定义了拷贝或移动操作时，该操作负责拷贝或移动包括基类成员在内的整个对象。
+
+当为派生类定义拷贝或移动构造函数时，通常使用对应的基类构造函数初始化对象的基类部分。
+
+class Base { /* ... */ } ;
+class D: public Base
+{
+public:
+    // by default, the base class default constructor initializes the base part of an object
+    // to use the copy or move constructor, we must explicitly call that
+    // constructor in the constructor initializer list
+    D(const D& d): Base(d)   // copy the base members
+    /* initializers for members of D */ { /* ... */ }
+    D(D&& d): Base(std::move(d))    // move the base members
+    /* initializers for members of D */ { /* ... */ }
+};
+
+// probably incorrect definition of the D copy constructor
+// base-class part is default initialized, not copied
+D(const D& d)   /* member initializers, but no base-class initializer */
+{ /* ... */ }
+
+在默认情况下，基类默认构造函数初始化派生类对象的基类部分。
+如果想拷贝或移动基类部分，则必须在派生类的构造函数初始化列表中显式地使用基类的拷贝或移动构造函数。
+
+派生类的赋值运算符必须显式地为其基类部分赋值。
+
+// Base::operator=(const Base&) is not invoked automatically
+D &D::operator=(const D &rhs)
+{
+    Base::operator=(rhs);   // assigns the base part
+    // assign the members in the derived class, as usual,
+    // handling self-assignment and freeing existing resources as appropriate
+    return *this;
+}
+
+派生类的析构函数只负责销毁派生类自己分配的资源。
+
+class D: public Base
+{
+public:
+    // Base::~Base invoked automatically
+    ~D() { /* do what it takes to clean up derived members */ }
+};
+
+如果构造函数或析构函数调用了某个虚函数，则应该执行与构造函数或析构函数所属类型相对应的虚函数版本。
+
+C++11新标准允许派生类重用（非常规方式继承）其直接基类定义的构造函数。继承方式是提供一条注明了直接基类名的using声明语句。
+
+class Bulk_quote : public Disc_quote
+{
+public:
+    using Disc_quote::Disc_quote;   // inherit Disc_quote's constructors
+    double net_price(std::size_t) const;
+};
+
+通常情况下，using声明语句只是令某个名字在当前作用域内可见。而作用于构造函数时，using声明将令编译器产生代码。
+对于基类的每个构造函数，编译器都会生成一个与其形参列表完全相同的派生类构造函数。如果派生类含有自己的数据成员，则这些成员会被默认初始化。
+
+构造函数的using声明不会改变该函数的访问级别，不能指定explicit或constexpr属性。
+
+定义在派生类中的构造函数会替换继承而来的具有相同形参列表的构造函数。
+
+派生类不能继承默认、拷贝和移动构造函数。如果派生类没有直接定义这些构造函数，则编译器会为其合成它们。
+
+当一个基类构造函数含有默认实参时，这些默认值不会被继承。相反，派生类会获得多个继承的构造函数，其中每个构造函数分别省略掉一个含有默认值的形参。
+
+因为容器中不能保存不同类型的元素，所以不能把具有继承关系的多种类型的对象直接存储在容器中。
+
+容器不能和存在继承关系的类型兼容。
+
+如果想在容器中存储具有继承关系的对象，则应该存放基类的指针。
