@@ -63,7 +63,7 @@ void f(T v);
 
 // `T` is a constrained type template parameter.
 template <typename T>
-  requires my_concept<T>
+requires my_concept<T>
 void f(T v);
 
 // `T` is a constrained type template parameter.
@@ -106,14 +106,14 @@ auto g = []<my_concept auto v> () {
 The requires keyword is used either to start a requires clause or a requires expression:
 
 template <typename T>
-  requires my_concept<T> // `requires` clause.
+requires my_concept<T> // `requires` clause.
 void f(T);
 
 template <typename T>
 concept callable = requires (T f) { f(); }; // `requires` expression.
 
 template <typename T>
-  requires requires (T x) { x + x; } // `requires` clause and expression on same line.
+requires requires (T x) { x + x; } // `requires` clause and expression on same line.
 T add(T a, T b) {
   return a + b;
 }
